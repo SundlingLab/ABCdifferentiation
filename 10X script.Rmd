@@ -1,0 +1,859 @@
+---
+title: "10x Data set"
+author: "ADCG"
+date: '`r format(Sys.Date(), "%Y-%m-%d")`'
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: pygments
+abstract: Short project description.
+knit: (function(inputFile, encoding) {
+          rmarkdown::render(inputFile,
+                            encoding = encoding, 
+                            output_file = paste0(
+                              xfun::sans_ext(inputFile), '_', Sys.Date(), '.html'),
+                                output_dir = "../results/lab_book/")})
+---
+
+```{r setup, include=FALSE}
+```
+
+## 1. Needed libraries
+
+```{r message=FALSE}
+library(tidyverse)
+library(readxl)
+library(Seurat)
+library(clustree)
+library(devtools)
+library(enrichR)
+library(SeuratWrappers)
+library(EnhancedVolcano)
+library(RColorBrewer)
+library(Nebulosa)
+#library(ReactomeGSA)
+library(viridis)
+```
+
+## 2. Data import
+
+### 2.1 Import your data into R
+
+```{r message=FALSE}
+My_object <- read_rds(file = "../10X data/data//Data_AtBcell_SeuratObject_min3cells_min50feat.RDS")
+```
+
+### 2.2 Data wrangling
+
+```{r message=FALSE}
+#- QC
+My_object[["percent.mt"]] <- PercentageFeatureSet(My_object, pattern = "^MT-")
+My_object[["percent.rb"]] <- PercentageFeatureSet(My_object, pattern = "^RP[SL][[:digit:]]")
+
+mito.genes <- grep(pattern = "^MT-", x = rownames(x = My_object), value = TRUE)
+ribo.genes <- grep(pattern = "^RP[SL][[:digit:]]", x = rownames(x = My_object), value = TRUE);
+percent.ribo <- Matrix::colSums(x = GetAssayData(object = My_object, slot = 'counts')[ribo.genes, ]) / Matrix::colSums(x = GetAssayData(object = My_object, slot = 'counts'));
+My_object[['percent.ribo']] <- percent.ribo;
+```
+
+```{r message=FALSE}
+VlnPlot(My_object, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo", "percent.rb"), ncol = 3)
+
+# Calculate the mean of reads per cell
+mean_reads_per_cell <- mean(My_object$nFeature_RNA)
+
+# Print the mean
+print(mean_reads_per_cell)
+```
+
+```{r message=FALSE}
+My_object <- subset(My_object, subset = nFeature_RNA > 500 & nFeature_RNA < 3500 & percent.mt < 20 & percent.rb > 10)
+
+
+#-Normalize
+My_object <- NormalizeData(My_object, normalization.method = "LogNormalize", scale.factor = 10000)
+
+#- Save your data in an external .txt tab or .csv files
+#saveRDS(file = "../data/AtBcells.rds", My_object)
+```
+```{r message=FALSE}
+#- Import your data into R as follow `read.csv()`
+dim(My_object)
+```
+
+## 3. Data analysis
+
+```{r message=FALSE}
+#- Find Variable features
+My_object <- FindVariableFeatures(My_object, selection.method = "vst", nfeatures = 2000)
+```
+
+```{r message=FALSE}
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(My_object), 10)
+```
+
+```{r message=FALSE, fig.width=6, fig.height=2}
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(My_object)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+#plot1 + plot2
+```
+
+### 3.1 Scaling
+```{r message=FALSE}
+#-Scaling the data
+all.genes <- rownames(My_object)
+counts <- GetAssayData(My_object, assay = "RNA")
+counts <- counts[-(which(rownames(counts) %in% c('HBB','HBA1','HBA2','HBG2','HBG1','HBD', "MALAT1", "MT-ND1",  "MT-ND2",  "MT-CO1",  "MT-CO2",  "MT-ATP8", "MT-ATP6", "MT-CO3", "MT-ND3", "MT-ND4L", "MT-ND4", "MT-ND5", "MT-ND6",  "MT-CYB", "RPL22", "RPL11", "RPS6KA1", "RPS8", "RPL5", "RPS27", "RPS6KC1", "RPS7", "RPS27A", "RPL31", "RPL37A", "RPL32", "RPL15", "RPL14", "RPL29", "RPL24", "RPL22L1", "RPL39L", "RPL35A", "RPL9", "RPL34-AS1", "RPL34", "RPS3A", "RPL37", "RPS23", "RPS14", "RPL26L1","RPS18" , "RPS10-NUDT3", "RPS10", "RPL10A", "RPL7L1", "RPS12", "RPS6KA2", "RPS6KA3", "RPS4X", "RPS6KA6", "RPL36A", "RPL39", "RPL10"     , "RPS20", "RPL7", "RPL30", "RPL8", "RPS6", "RPL35", "RPL12", "RPL7A", "RPL27A", "RPS13", "RPS6KA4", "RPS6KB2", "RPS6KB2-AS1", "RPS3", "RPS25", "RPS24", "RPS26", "RPL41", "RPL6", "RPL21", "RPS29", "RPL36AL", "RPS6KL1", "RPS6KA5", "RPS27L", "RPL4", "RPS17", "RPS2", "RPS15A", "RPL13", "RPL26", "RPL23A", "RPL23", "RPL19", "RPL27", "RPS6KB1", "RPL38", "RPL17", "RPS21", "RPS15", "RPL36", "RPS28", "RPL18A", "RPS16", "RPS19", "RPL18", "RPL13A", "RPS11", "RPS9", "RPL28", "RPS5", "RPS4Y1", "RPS4Y2", "RPL3", "RPS19BP1"))),]
+My_object <- subset(My_object, features = rownames(counts))
+My_object <- ScaleData(My_object, features = all.genes)
+```
+
+### 3.2 PCA
+```{r message=FALSE}
+# Examine and visualize PCA results a few different ways
+My_object <- RunPCA(My_object, features = VariableFeatures(object = My_object))
+print(My_object[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(My_object, dims = 1:2, reduction = "pca")
+```
+
+```{r message=FALSE}
+#- Determine the ‘dimensionality’ of the dataset
+My_object <- JackStraw(My_object, num.replicate = 100)
+My_object <- ScoreJackStraw(My_object, dims = 1:20)
+JackStrawPlot(My_object, dims = 1:10)
+ElbowPlot(My_object)
+```
+### 3.3 Clustering
+```{r message=FALSE}
+#-Clustering
+#Compute the relative expression of each gene per cell
+#Use sparse matrix operations, if your dataset is large, doing matrix devisions the regular way will take a very long time.
+library(Matrix)
+par(mar=c(4,8,2,1))
+C <- My_object@assays$RNA@counts
+C <-  Matrix::t( Matrix::t(C) / Matrix::colSums(C) ) * 100
+most_expressed <- order(apply(C,1,median),decreasing = T)[20:1]
+boxplot( as.matrix(t(C[most_expressed,])),cex=.1, las=1, xlab="% total count per cell",col=scales::hue_pal()(20)[20:1],horizontal=TRUE)
+
+My_object <- FindNeighbors(My_object, reduction = "pca", dims = 1:30)
+My_object <- RunUMAP(My_object, dims = 1:30,reduction = )
+DimPlot(My_object, reduction = "umap")
+```
+
+## 4. Result visualisation
+
+```{r message=FALSE}
+#-Run non-linear dimensional reduction
+My_object <- FindClusters(My_object, resolution = 0.8)
+My_object <- RunUMAP(My_object, dims = 1:20,reduction = )
+
+DimPlot(My_object, reduction = "umap", pt.size = 2)
+```
+
+```{r message=FALSE}
+new.cluster.ids <- c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2", "ActMBC")
+names(new.cluster.ids) <- levels(My_object)
+My_object <- RenameIdents(My_object, new.cluster.ids)
+DimPlot(My_object, reduction = "umap", label = TRUE, pt.size = 2, label.size = 7) + NoLegend()
+save(My_object,file = "SeurtObj.RData")
+```
+
+```{r message=FALSE}
+#-Find all markers
+FindAllMarkers(My_object,assay = NULL,features = NULL,logfc.threshold = 0.25,test.use = "MAST",slot = "data",min.pct = 0.1,min.diff.pct = -Inf,node = NULL,verbose = TRUE,only.pos = FALSE,max.cells.per.ident = Inf,random.seed = 1,latent.vars = NULL, min.cells.feature = 3, min.cells.group = 3,pseudocount.use = 1,mean.fxn = NULL, fc.name = NULL, base = 2, return.thresh = 0.01,densify = FALSE)
+My_object.markers <- FindAllMarkers(My_object, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25)
+
+
+# Sélectionner les colonnes nécessaires
+DEG_for_export <- My_object.markers[, c("gene", "cluster", "avg_log2FC")]
+
+# Renommer les colonnes
+colnames(DEG_for_export) <- c("GeneName", "Cluster", "Value")
+head(DEG_for_export)
+
+# Exporter avec write.csv(), compatible avec Reactome GSA
+write.table(DEG_for_export, file = "DEG_with_Clusters_for_ReactomeGSA.tsv", 
+            sep = "\t", row.names = FALSE, quote = FALSE)
+
+
+```
+
+```{r, Top 10 genes per cluster, message=FALSE}
+My_object.idents.col <- setNames(c(RColorBrewer::brewer.pal(name="Set3",n=5)), c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2", "ActMBC"))
+My_object.markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+
+heatmap <- DoHeatmap(
+  My_object,
+  features = top10$gene,
+  group.colors = My_object.idents.col
+) +
+  scale_fill_viridis() +
+  theme(plot.margin = unit(c(2, 1, 1, 1), "cm"))  # top, right, bottom, left
+
+heatmap
+# Save to PDF
+ggsave("FigS3a.pdf", plot = heatmap, width = 10, height = 8)
+```
+
+```{r AtBcell signature,message=FALSE}
+## set color for all 
+My_object.idents.col <- setNames(c(RColorBrewer::brewer.pal(name="Set3",n=11)), c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2", "ActMBC"))
+My_object.idents.col["Ter-AtBC"] <- "#B3DE69"
+My_object.idents.col["CD11c-MBC"] <- "#FDB462"
+My_object.idents.col["Int-AtBC2"] <- "#80B1D3"
+My_object.idents.col["Int-AtBC1"] <- "#FFED6F"
+My_object.idents.col["ActMBC"] <- "#8DD3C7"
+
+display.brewer.pal(n = 12, name = "Paired")
+colors <- brewer.pal(n = 12, name = "Set3")
+print(colors)
+
+DimPlot(My_object, reduction = "umap", label = TRUE, pt.size = 2, label.size = 7, cols = My_object.idents.col) + NoLegend()
+
+atbcell.genes = c("FCRL5", "TBX21", "ITGAX", "CD1C", "ZEB2", "CD24","CD27", "MZB1", "CXCR3", "CXCR4")
+VlnPlot(My_object, features = atbcell.genes, pt.size = 0, cols = My_object.idents.col)
+#Nebulosa::plot_density(My_object, features = atbcell.genes, size = 3)
+
+VlnPlot(My_object, idents=c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2"), features = c("CXCR3", "ZEB2", "ITGAX", "CD1C", "SELL", "TBX21", "MZB1", "NKG7", "ITGAM" ), pt.size = 0, cols = My_object.idents.col)
+#DoHeatmap(My_object, features = atbcell.genes) + NoLegend() fig.width=15
+
+VlnPlot(My_object, features = atbcell.genes, pt.size = 0, idents = c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2"), cols = My_object.idents.col)
+```
+
+```{r Colors,message=FALSE}
+#My_object.idents.col <- setNames(c(RColorBrewer::brewer.pal(name="Set3",n=11)), c("AtBC", "MBC", "AtBC2", "AtBC3", "ActMBC"))
+DimPlot(My_object, reduction = "umap", label = TRUE, pt.size = 2, label.size = 10, cols = My_object.idents.col) + NoLegend()
+#ggsave("My_UMAP_Plot.pdf", plot = last_plot(), device = "pdf", width = 8, height = 6)
+DimPlot(My_object, reduction = "umap", label = TRUE, pt.size = 3, label.size = 0, cols = My_object.idents.col) + NoLegend()
+# Save the DimPlot as a PDF
+#ggsave("My_UMAP_Plot_NL.pdf", plot = last_plot(), device = "pdf", width = 8, height = 6)
+
+
+```
+
+
+
+
+
+```{r HLA Significant check, message=FALSE}
+VlnPlot(My_object, features = c("HLA-DRB1",	"HLA-DPA1", "HLA-DRB5", "HLA-DRA", "HLA-DQB1", "HLA-DPB1", "HLA-DQA1"), pt.size = 0, cols = My_object.idents.col)
+```
+
+```{r IG Significant, message=FALSE}
+VlnPlot(My_object, features = c("IGHG3", "IGHD", "IGHA1", "IGHG1", "IGHM"), pt.size = 0, cols = My_object.idents.col)
+RidgePlot(My_object, features = c("IGHG3", "IGHD", "IGHA1", "IGHG1", "IGHM"), cols = My_object.idents.col)
+DotPlot(My_object, features = c("IGHG3", "IGHD", "IGHA1", "IGHG1", "IGHM"), cols = My_object.idents.col)
+Nebulosa::plot_density(My_object, features = c("IGHG3", "IGHD", "IGHA1", "IGHG1", "IGHM"), size = 1)
+```
+
+```{r}
+VlnPlot(My_object, idents = c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2") , features = c("TBX21", "ITGAX", "CD1C", "CD24", "CD27", "NKG7"), pt.size = 0, cols = My_object.idents.col, stack = TRUE, flip = TRUE, fill.by = "ident")
+#ggsave("VlnPlot_atbc_genes.pdf", plot = vlnplot_1, width = 6, height = 12)
+VlnPlot(My_object, idents = c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2") , features = c("CD24", "CD27", "NKG7"), pt.size = 0, cols = My_object.idents.col, stack = TRUE, flip = TRUE, fill.by = "ident")
+#ggsave("VlnPlot_atbc_genesP2.pdf", plot = vlnplot_2, width = 6, height = 6)
+VlnPlot(My_object, idents = c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2") , features = c("CD9", "CD1C", "MZB1", "CD1C", "CD5", "CD274", "CD80"), pt.size = 0, cols = My_object.idents.col, stack = FALSE, flip = FALSE, fill.by = "ident")
+Nebulosa::plot_density(My_object, features = c("CD9", "CD1C", "MZB1", "CD5", "CD274", "CD80"), size = 1)
+```
+
+```{r}
+chemo.genes <- c("CCL1","CCL2","CCL3", "CCL4","CCL5","CCL7","CCL8","CCL13", "CCL14", "CCL16","CCL17", "CCL18", "CCL19", "CCL20", "CCL21", "CCL22", "CCL23","CCL27", "CCL28", "CCL3L3", "CCL4L2", "C5", "CKLF", "CXCL1", "CXCL2", "CXCL3", "CXCL4", "CXCL5", "CXCL6", "IL8", "CXCL9", "CXCL10", "CXCL11", "CXCL13", "CXCL14", "CXCL16", "CXC3CL1", "RARRES2", "PF4V1", "XCL1", "XCL2")
+chemoR.genes <- c("CCR1", "CCR2", "CCR3","CCR4","CCR6","CCR7", "CCR10","CCR12","CMKLR1","CXCR3","CXCR4", "CXCR5", "DARC","ACKR2", "ACKR3", "ACKR4")
+integrin.genes <- c("ITGA1","ITGA2","ITGA2B", "ITGA3","ITGA5","ITGA6","ITGA9","ITGAV", "ITGB1", "ITGB2","ITGB3", "ITGB4", "ITGB5")
+CytoRec.genes <- c("VEGFA","VEGFB","VEGFC", "FLT4","PDGFRA","PDGFRB","IL7","IL2RG", "IL3RA", "CSF2RB","TIMP1", "IL6", "LIF", "IL6ST", "IL1RA", "LIFR", "OSMR","IFNGR1", "IFNGR2", "IL33", "LTA", "LTB", "TNF", "TNFSF9", "TNFSF10", "TNFSF11", "TNFSF12", "TNFSF13B", "CD40", "TNFRSF1A", "TNFRSF4", "TNFRSF9", "BMP2", "BMP4", "GDF10", "TGFB1", "TGFB2", "TGFBR2", "CSF1", "FAM3C", "GRN", "IL32", "IL34", "NAMPT")
+
+
+#DotPlot(My_object, features = atbc.genes, cols = brewer.pal(3, "Pastel1"), dot.scale = 10 ) + RotatedAxis() + ggtitle("AtBC genes")
+DotPlot(My_object, features = chemo.genes, cols = brewer.pal(3, "Pastel1"), dot.scale = 10 ) + RotatedAxis() + ggtitle("Chemokines genes")
+DotPlot(My_object, features = chemoR.genes, cols = brewer.pal(3, "Pastel1"), dot.scale = 10 ) + RotatedAxis() + ggtitle("Chemokines receptor genes")
+DotPlot(My_object, features = integrin.genes, cols = brewer.pal(3, "Pastel1"), dot.scale = 10 ) + RotatedAxis() + ggtitle("Integrin genes")
+DotPlot(My_object, features = CytoRec.genes, cols = brewer.pal(3, "Pastel1"), dot.scale = 10 ) + RotatedAxis() + ggtitle("Cytokines and Receptor genes")
+
+
+
+plasma_markers <- c(
+  "PRDM1",     # BLIMP-1
+  "XBP1",      # Drives unfolded protein response
+  "IRF4",      # Essential for plasma cell fate
+  "MZB1",      # ER chaperone for antibody folding
+  "JCHAIN",    # Still non-Ig, joins Ig polymers
+  "SDC1",      # CD138 surface marker
+  "TNFRSF17",  # BCMA — plasma cell survival
+  "DERL3"      # ER stress response
+)
+
+dotplot <- DotPlot(My_object, features = plasma_markers) +
+  RotatedAxis() +
+  scale_color_distiller(palette = "RdYlBu", direction = -1) +  # direction = -1 to have blue = low, red = high
+  ggtitle("Plasma Cell Marker Expression")
+ggsave("FigS3c.pdf", plot = dotplot, width = 10, height = 6)
+```
+
+
+```{r}
+C0VS2 <- FindMarkers(My_object, ident.1 = "Ter-AtBC", ident.2 = "Int-AtBC1", only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#pdf("volcano_plotTerVS1.pdf", width = 10, height = 8)  # Adjust width and height as needed
+EnhancedVolcano(C0VS2,
+    lab = rownames(C0VS2),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    selectLab = c("CD27","CXCR3", "GSTP1", "TESC", "LY6", "CD72", "CD22", "NKG7", "FCRL5", "IGHD"),
+    xlab = bquote(~Log[2]~ 'fold change'),
+    pointSize = 3.0,
+    labSize = 6.0,
+    labCol = 'black',
+    labFace = 'bold',
+    boxedLabels = TRUE,
+    col = c('black', 'pink', 'purple', 'red3'),
+    colAlpha = 4/5,
+    legendPosition = 'right',
+    legendLabSize = 12,
+    legendIconSize = 2.0,
+    drawConnectors = TRUE,
+    widthConnectors = 1.0,
+    colConnectors = 'black',
+    title = 'Ter-AtBC VS Int-AtBC1',
+    subtitle = "")
+# Close the PDF device
+#dev.off()
+
+
+C0VS3 <- FindMarkers(My_object, ident.1 = "Ter-AtBC", ident.2 = "Int-AtBC2", only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#pdf("volcano_plotTerVS2.pdf", width = 10, height = 8)  # Adjust width and height as needed
+EnhancedVolcano(C0VS3,
+    lab = rownames(C0VS3),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    selectLab = c("NKG7","FAM129C", "CCND3", "LTB", "CD24", "MZB1", "CMTM3", "CD22", "FCRL5", "IGHD"),
+    xlab = bquote(~Log[2]~ 'fold change'),
+    pointSize = 3.0,
+    labSize = 6.0,
+    labCol = 'black',
+    labFace = 'bold',
+    boxedLabels = TRUE,
+    col = c('black', 'pink', 'purple', 'red3'),
+    colAlpha = 4/5,
+    legendPosition = 'right',
+    legendLabSize = 12,
+    legendIconSize = 2.0,
+    drawConnectors = TRUE,
+    widthConnectors = 1.0,
+    colConnectors = 'black',
+    title = 'Ter-AtBC VS Int-AtBC2',
+    subtitle = "")
+# Close the PDF device
+#dev.off()
+
+C2VS3 <- FindMarkers(My_object, ident.1 = "Int-AtBC1", ident.2 = "Int-AtBC2", only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#pdf("volcano_plot1VS2.pdf", width = 10, height = 8)  # Adjust width and height as needed
+EnhancedVolcano(C2VS3,
+    lab = rownames(C2VS3),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    xlab = bquote(~Log[2]~ 'fold change'),
+    pointSize = 3.0,
+    labSize = 6.0,
+    labCol = 'black',
+    labFace = 'bold',
+    boxedLabels = TRUE,
+    col = c('black', 'pink', 'purple', 'red3'),
+    colAlpha = 4/5,
+    legendPosition = 'right',
+    legendLabSize = 12,
+    legendIconSize = 2.0,
+    drawConnectors = TRUE,
+    widthConnectors = 1.0,
+    colConnectors = 'black',
+    title = 'Int-AtBC1 VS Int-AtBC2',
+    subtitle = "")
+# Close the PDF device
+#dev.off()
+
+```
+
+```{r}
+# Charger ggplot2 pour sauvegarde
+library(ggplot2)
+
+# Comparaison 1 : Ter-AtBC vs Int-AtBC1
+C0VS2 <- FindMarkers(My_object, ident.1 = "Ter-AtBC", ident.2 = "Int-AtBC1", only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25)
+C0VS2$combined_score <- -log10(C0VS2$p_val_adj) * abs(C0VS2$avg_log2FC)
+top10_C0VS2 <- rownames(C0VS2[order(-C0VS2$combined_score), ][1:10, ])
+
+p1 <- DotPlot(My_object, 
+              features = top10_C0VS2, 
+              dot.scale = 10, 
+              idents = c("Ter-AtBC", "Int-AtBC1"), 
+              cols = "RdYlBu") +
+  RotatedAxis() +
+  ggtitle("Top 10 DEG entre Ter-AtBC et Int-AtBC1")
+ggsave("Top10_DEG_Ter-AtBC_vs_Int-AtBC1.pdf", plot = p1, width = 10, height = 4)
+
+# Comparaison 2 : Ter-AtBC vs Int-AtBC2
+C0VS3 <- FindMarkers(My_object, ident.1 = "Ter-AtBC", ident.2 = "Int-AtBC2", only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25)
+C0VS3$combined_score <- -log10(C0VS3$p_val_adj) * abs(C0VS3$avg_log2FC)
+top10_C0VS3 <- rownames(C0VS3[order(-C0VS3$combined_score), ][1:10, ])
+
+p2 <- DotPlot(My_object, 
+              features = top10_C0VS3, 
+              dot.scale = 10, 
+              idents = c("Ter-AtBC", "Int-AtBC2"), 
+              cols = "RdYlBu") +
+  RotatedAxis() +
+  ggtitle("Top 10 DEG entre Ter-AtBC et Int-AtBC2")
+ggsave("Top10_DEG_Ter-AtBC_vs_Int-AtBC2.pdf", plot = p2, width = 10, height = 4)
+
+# Comparaison 3 : Int-AtBC1 vs Int-AtBC2
+C2VS3 <- FindMarkers(My_object, ident.1 = "Int-AtBC1", ident.2 = "Int-AtBC2", only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25)
+C2VS3$combined_score <- -log10(C2VS3$p_val_adj) * abs(C2VS3$avg_log2FC)
+top10_C2VS3 <- rownames(C2VS3[order(-C2VS3$combined_score), ][1:10, ])
+
+p3 <- DotPlot(My_object, 
+              features = top10_C2VS3, 
+              dot.scale = 10, 
+              idents = c("Int-AtBC1", "Int-AtBC2"), 
+              cols = "RdYlBu") +
+  RotatedAxis() +
+  ggtitle("Top 10 DEG entre Int-AtBC1 et Int-AtBC2")
+ggsave("Top10_DEG_Int-AtBC1_vs_Int-AtBC2.pdf", plot = p3, width = 10, height = 4)
+
+# Combiner les 3 listes
+combined_genes <- unique(c(top10_C0VS2, top10_C0VS3, top10_C2VS3))
+
+# DotPlot combiné
+p4 <- DotPlot(My_object, 
+              features = combined_genes, 
+              dot.scale = 10, 
+              idents = c("Ter-AtBC", "Int-AtBC1", "Int-AtBC2"), 
+              cols = "RdYlBu") +
+  RotatedAxis() +
+  ggtitle("DEG combinés entre Ter-AtBC, Int-AtBC1 et Int-AtBC2")
+ggsave("Combined_DEG_Ter-Int-AtBC.pdf", plot = p4, width = 10, height = 4)
+
+print(p1)
+print(p2)
+print(p3)
+print(p4)
+```
+
+
+```{r Over-expressed message=FALSE}
+VlnPlot(My_object, features = c( "CD86", "CD74", "CD72", "CD68"), cols = My_object.idents.col, pt.size = 0)
+
+VlnPlot(My_object, features = c("LTB", "FCER2", "S100A10", "S100A4", "NFKBIA", "SELL", "NR4A1", "FCRL4", "FCRL5"), cols = My_object.idents.col, pt.size = 0)
+```
+
+```{r LZ and IL4 sign, message=FALSE}
+VlnPlot(My_object, features = c("LTB", "FCER2", "NFKBIA", "CCND3", "MYC"), pt.size = 0, cols = My_object.idents.col)
+VlnPlot(My_object, features = c("LTB", "FCER2", "MYC", "CD72", "HHEX", "TCL1A"), pt.size = 0, cols = My_object.idents.col)
+VlnPlot(My_object, features = c("LTB", "NKG7"), pt.size = 0, cols = My_object.idents.col)
+
+atbc.genes1 <- c("ITGAX","TBX21","CXCR3")
+
+vlnplot_1 <- VlnPlot(My_object, features = atbc.genes1, pt.size = 0, idents = c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2"),cols = My_object.idents.col, stack = FALSE, flip = TRUE, fill.by = "ident" )
+#ggsave("VlnPlot_atbc_genes1p.pdf", plot = vlnplot_1, width = 16, height = 8)
+
+atbc.genes2 <- c("CD24","CD27","FCRL5")
+
+vlnplot_1 <- VlnPlot(My_object, features = atbc.genes2, pt.size = 0, idents = c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2"),cols = My_object.idents.col, stack = FALSE, flip = TRUE, fill.by = "ident" )
+#ggsave("VlnPlot_atbc_genes2p.pdf", plot = vlnplot_1, width = 16, height = 8)
+
+atbc.genes3 <- c("CD1C","ZEB2","NKG7")
+
+vlnplot_1 <- VlnPlot(My_object, features = atbc.genes3, pt.size = 0, idents = c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2"),cols = My_object.idents.col, stack = FALSE, flip = TRUE, fill.by = "ident" )
+#ggsave("VlnPlot_atbc_genes3p.pdf", plot = vlnplot_1, width = 16, height = 8)
+```
+
+```{r}
+p = VlnPlot(My_object, features = atbc.genes2, pt.size = 0, idents = c("Ter-AtBC", "CD11c-MBC", "Int-AtBC1", "Int-AtBC2"),cols = My_object.idents.col, stack = TRUE, flip = TRUE, fill.by = "ident" )
+p$layers[[1]]$aes_params$size = 1
+p
+```
+
+
+```{r}
+AtB.MBCmarkers <- FindMarkers(My_object, ident.1 = "Ter-AtBC", ident.2 = "CD11c-MBC", only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25)
+EnhancedVolcano(AtB.MBCmarkers, lab = rownames(AtB.MBCmarkers), x = 'avg_log2FC', y = 'p_val_adj',  title = 'AtBC VS MBC', subtitle = 'CD11c+ Acute Malaria')
+```
+
+```{r GSEA, message=FALSE}
+enrich_results <- enrichr(genes = all.genes, databases = "GO_Biological_Process_2017b")
+
+par(mar = c(3, 25, 2, 1))
+barplot(height    = -log10(enrich_results$GO_Biological_Process_2017b$P.value)[10:1],
+      names.arg = enrich_results$GO_Biological_Process_2017b$Term[10:1],
+      horiz     = TRUE,
+      las       = 1,
+      border    = FALSE,
+      cex.names = .6 )
+abline(v = c(-log10(0.05)), lty = 2)
+```
+
+```{r}
+DEenrichRPlot(
+  My_object,
+  ident.1 = "Ter-AtBC",
+  ident.2 = "Int-AtBC1",
+  balanced = TRUE,
+  logfc.threshold = 0.25,
+  assay = NULL,
+  max.genes = 50,
+  test.use = "wilcox",
+  p.val.cutoff = 0.05,
+  cols = NULL,
+  enrich.database = "KEGG_2021_Human",
+  num.pathway = 15,
+  return.gene.list = FALSE,)
+```
+
+## 5. Reactome pathway
+
+```{r}
+library(ReactomeGSA)
+
+gsva_result <- analyse_sc_clusters(My_object, verbose = TRUE)
+gsva_result
+pathway_expression <- pathways(gsva_result)
+
+# simplify the column names by removing the default dataset identifier
+colnames(pathway_expression) <- gsub("\\.Seurat", "", colnames(pathway_expression))
+pathway_expression[1:3,]
+
+# find the maximum differently expressed pathway
+max_difference <- do.call(rbind, apply(pathway_expression, 1, function(row) {
+    values <- as.numeric(row[2:length(row)])
+    return(data.frame(name = row[1], min = min(values), max = max(values)))
+}))
+
+max_difference$diff <- max_difference$max - max_difference$min
+
+# sort based on the difference
+max_difference <- max_difference[order(max_difference$diff, decreasing = T), ]
+
+head(max_difference)
+
+plot_gsva_pathway(gsva_result, pathway_id = rownames(max_difference)[1])
+
+# Additional parameters are directly passed to gplots heatmap.2 function
+plot_gsva_heatmap(gsva_result, max_pathways = 15, margins = c(6,20))
+
+# limit to selected B cell related pathways
+relevant_pathways <- c("R-HSA-983170", "R-HSA-388841", "R-HSA-2132295", "R-HSA-983705", "R-HSA-5690714", "R-HSA-1169091", "R-HSA-1168372", "R-HSA-983695", "R-HSA-9020958", "R-HSA-877300", "R-HSA-975110", "R-HSA-2173789", "R-HSA-1059683", "R-HSA-109606", "R-HSA-170834")
+
+TGFpath <- c("R-HSA-2173789","R-HSA-109606")
+
+# limit to selected B cell related pathways
+relevant_pathways <- c("R-HSA-983170", "R-HSA-388841", "R-HSA-2132295", "R-HSA-983705", "R-HSA-5690714", "R-HSA-1169091", "R-HSA-1168372", "R-HSA-983695", "R-HSA-9020958", "R-HSA-877300", "R-HSA-975110", "R-HSA-2173789", "R-HSA-1059683", "R-HSA-109606", "R-HSA-170834")
+AgPres_pathways <- c("R-HSA-1236975", "R-HSA-2132295", "R-HSA-983169", "R-HSA-1236978", "R-HSA-1236973", "R-HSA-983168")
+Complement_pathways <- c("R-HSA-166658", "R-HSA-977606", "R-HSA-173736", "R-HSA-166663", "R-HSA-166786", "R-HSA-166662", "R-HSA-173623","R-HSA-174577")
+CellCycle_pathways <- c("R-HSA-1640170", "R-HSA-69206", "R-HSA-69615", "R-HSA-68911","R-HSA-69236", "R-HSA-453274", "R-HSA-1538133")
+Activation_pathways <- c("R-HSA-983705", "R-HSA-168181", "R-HSA-168138", "R-HSA-877300","R-HSA-9020702", "R-HSA-9020558", "R-HSA-512988", "R-HSA-1059683", "R-HSA-1266695", "R-HSA-6783783","R-HSA-9020591", "R-HSA-448424", "R-HSA-9020958")
+
+
+plot_gsva_heatmap(gsva_result, 
+                  pathway_ids = CellCycle_pathways, # limit to these pathways
+                  truncate_names=FALSE,
+                  margins = c(10,30), # adapt the figure margins in heatmap.2
+                  dendrogram = "col", # only plot column dendrogram
+                  scale = "row", # scale for each pathway
+                  key = TRUE, # don't display the color key
+                  lwid=c(0.1,0.5)) # remove the white space on the left
+```
+
+### 5.1. Reactome on only AtBC subsets
+
+```{r}
+#Removing ActMBC and MBC
+subcell <- subset(My_object, idents = c("ActMBC"), invert = TRUE)
+
+gsva_result <- analyse_sc_clusters(subcell, verbose = TRUE)
+gsva_result
+pathway_expression <- pathways(gsva_result)
+
+# simplify the column names by removing the default dataset identifier
+colnames(pathway_expression) <- gsub("\\.Seurat", "", colnames(pathway_expression))
+pathway_expression[1:3,]
+
+# find the maximum differently expressed pathway
+max_difference <- do.call(rbind, apply(pathway_expression, 1, function(row) {
+    values <- as.numeric(row[2:length(row)])
+    return(data.frame(name = row[1], min = min(values), max = max(values)))
+}))
+
+max_difference$diff <- max_difference$max - max_difference$min
+
+# sort based on the difference
+max_difference <- max_difference[order(max_difference$diff, decreasing = T), ]
+
+head(max_difference)
+
+plot_gsva_pathway(gsva_result, pathway_id = rownames(max_difference)[1])
+
+# Additional parameters are directly passed to gplots heatmap.2 function
+plot_gsva_heatmap(gsva_result, max_pathways = 15, margins = c(6,20))
+
+# limit to selected B cell related pathways
+Bact_pathways <- c("R-HSA-5690714", "R-HSA-1168372", "R-HSA-1169091", "R-HSA-983695", "R-HSA-388841")
+Bfunc_pathways <- c("R-HSA-2132295", "R-HSA-983170", "R-HSA-9020958", "R-HSA-877300", "R-HSA-975110", "R-HSA-1059683", "R-HSA-109606", "R-HSA-8940973", "R-HSA-202733")
+TB_pathways <- c("R-HSA-389513", "R-HSA-2173789", "R-HSA-198933", "R-HSA-389948", "R-HSA-5676590")
+
+# Create a reversed color palette
+reversed_palette <- colorRampPalette(rev(brewer.pal(11, "RdBu")))
+
+plot_gsva_heatmap(gsva_result, 
+                  pathway_ids = Bact_pathways, # limit to these pathways
+                  truncate_names=FALSE,
+                  margins = c(10,30), # adapt the figure margins in heatmap.2
+                  dendrogram = "col", # only plot column dendrogram
+                  scale = "row", # scale for each pathway
+                  key = TRUE, # don't display the color key
+                  lwid=c(0.1,0.5), # remove the white space on the left
+                  col = reversed_palette(100))
+
+plot_gsva_heatmap(gsva_result, 
+                  pathway_ids = Bfunc_pathways, # limit to these pathways
+                  truncate_names=FALSE,
+                  margins = c(10,30), # adapt the figure margins in heatmap.2
+                  dendrogram = "col", # only plot column dendrogram
+                  scale = "row", # scale for each pathway
+                  key = TRUE, # don't display the color key
+                  lwid=c(0.1,0.5), # remove the white space on the left
+                  col = reversed_palette(100))
+
+plot_gsva_heatmap(gsva_result, 
+                  pathway_ids = CellCycle_pathways, # limit to these pathways
+                  truncate_names=FALSE,
+                  margins = c(10,30), # adapt the figure margins in heatmap.2
+                  dendrogram = "col", # only plot column dendrogram
+                  scale = "row", # scale for each pathway
+                  key = TRUE, # don't display the color key
+                  lwid=c(0.1,0.5), # remove the white space on the left
+                  col = reversed_palette(100))
+plot_gsva_pca(gsva_result)
+
+# Create plot
+pca_plot <- plot_gsva_pca(gsva_result) +
+  theme(plot.margin = unit(c(2, 1, 1, 1), "cm"))  # Add top margin if needed
+
+# Save to PDF
+ggsave("FigS3pca.pdf", plot = pca_plot, width = 8, height = 6)
+
+```
+```{r}
+# Open a PDF device with specified dimensions
+pdf("pathway_heatmap.pdf", width = 15, height = 20)
+
+# Plot the heatmap with adjusted layout
+plot_gsva_heatmap(gsva_result, 
+                  pathway_ids = all_pathways,
+                  truncate_names = FALSE,         # Ensure full pathway names are displayed
+                  margins = c(10, 30),           # Increase right margin for pathway names
+                  dendrogram = "none",           # Remove dendrogram
+                  scale = "row",                 # Scale rows
+                  key = TRUE,                   # No color key
+                  lwid = c(0.05, 0.95),          # Reduce left whitespace, increase heatmap width
+                  col = reversed_palette(100),   # Use reversed palette
+                  Colv = FALSE,                  # Disable column clustering
+                  Rowv = FALSE)                  # Disable row clustering
+
+
+# Open a new PDF device for the color key
+# Open a new PDF device for the color key
+pdf("heatmap_color_key.pdf", width = 5, height = 2)  # Adjust dimensions as needed
+
+# Create a reversed color palette
+library(RColorBrewer)
+reversed_palette <- colorRampPalette(rev(brewer.pal(11, "RdBu")))(100)
+
+# Set up the color key
+par(mar = c(2, 1, 2, 1))  # Adjust margins for the color key
+
+# Create the color key from -1 to 1
+image(
+  z = matrix(seq(-1, 1, length.out = 100), ncol = 1),
+  col = reversed_palette,
+  axes = FALSE,
+  xlab = "",
+  ylab = ""
+)
+
+# Add axis labels
+axis(1, at = seq(0, 1, length.out = 5), labels = seq(-1, 1, by = 0.5), cex.axis = 1)
+
+# Close the PDF device
+dev.off()
+
+```
+
+
+## 6. Sandbox
+```{r}
+library(clusterProfiler)
+#""AtBC", "MBC", "AtBC2", "AtBC3", "ActMBC"
+top100 <- My_object.markers %>% group_by(cluster) %>% top_n(n = 1000, wt = avg_log2FC)
+top100pval <- subset(top100, rowSums(top100[5] < 0.05) > 0)
+
+df <- top100pval[,7:6]
+dfsample <- split(df$gene,df$cluster)
+length(dfsample)
+
+#The output of length(dfsample) returns how many clusters you have
+#Here there at 9 clusters (0, 1, 2, 3, 4, 5, 6, 7 and 8)
+#I'm sure there's a better way but you have to make a line like below for each cluster
+
+dfsample$`0` = bitr(dfsample$`Ter-AtBC`, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+dfsample$`1` = bitr(dfsample$`MBC`, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+dfsample$`2` = bitr(dfsample$`Int-AtBC1`, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+dfsample$`3` = bitr(dfsample$`Int-AtBC2`, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+dfsample$`4` = bitr(dfsample$`ActMBC`, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+
+
+#do the same here, a line like below for each cluster
+genelist <- list("Ter-AtBC" = dfsample$`0`$ENTREZID, 
+                 "MBC" = dfsample$`1`$ENTREZID,
+                 "Int-AtBC1" = dfsample$`2`$ENTREZID,
+                 "Int-AtBC2" = dfsample$`3`$ENTREZID,
+                 "ActMBC" = dfsample$`4`$ENTREZID)
+
+GOclusterplot <- compareCluster(geneCluster = genelist, fun = "enrichGO", OrgDb = "org.Hs.eg.db")
+dotplot(GOclusterplot)
+
+GOclusterplot2 <- compareCluster(geneCluster = genelist, fun = "enrichKEGG", organism = "hsa")
+dotplot(GOclusterplot2)
+
+GOclusterplot3 <- compareCluster(geneCluster = genelist, fun = "enrichPathway", organism = "human")
+dotplot(GOclusterplot3)
+```
+
+```{r}
+# 1. Charger les bibliothèques nécessaires
+library(ActivePathways)
+
+markers_filtered <- My_object.markers %>%
+  select(gene, cluster, p_val_adj) %>%
+  pivot_wider(names_from = cluster, values_from = p_val_adj) %>%
+  column_to_rownames(var = "gene")  # Convertir les gènes en noms de lignes
+
+markers_filtered <- as.matrix(markers_filtered)
+markers_filtered[is.na(markers_filtered)] <- 1
+
+
+# 3. Charger le fichier GMT contenant les pathways
+gmt_file <- "~/Desktop/c5.go.v2024.1.Hs.symbols.gmt"  # Chemin vers le fichier GMT
+
+# 4. Exécuter l'analyse ActivePathways
+pathway_results <- ActivePathways(markers_filtered,gmt_file,significant = 0.05)
+res <- ActivePathways(markers_filtered,gmt_file,significant = 0.05, cytoscape_file_tag = "enrichmentMap__")
+
+# 5. Afficher les résultats
+head(pathway_results)
+
+# Préparer les données pour ggplot
+top_pathways <- pathway_results %>%
+  group_by(evidence) %>%  # evidence ici correspond à vos clusters
+  slice_min(order_by = adjusted_p_val, n = 5) %>%  # Sélectionner les 5 pathways les plus significatifs par cluster
+  ungroup()
+
+top_pathways$evidence <- sapply(top_pathways$evidence, function(x) x[[1]])
+top_pathways$overlap <- sapply(top_pathways$overlap, function(x) length(x))
+
+ggplot(top_pathways, aes(x = evidence, y = term_id, size = overlap, color = -log10(adjusted_p_val))) +
+  geom_point() +
+  scale_size_continuous(name = "Gènes enrichis", range = c(3, 10)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_minimal() +
+  labs(
+    x = "Cluster",
+    y = "Pathway",
+    title = "Pathways enrichis par cluster"
+  )
+
+
+# Filtrer et transformer les résultats ActivePathways
+formatted_results <- pathway_results %>%
+  select(evidence, term_name, adjusted_p_val, overlap, term_size) %>%
+  mutate(
+    proportion = overlap / term_size  # Proportion enrichie
+  ) %>%
+  rename(
+    Cluster = evidence,
+    Pathway = term_name,
+    p.adjust = adjusted_p_val,
+    Overlap = overlap
+  )
+
+# Sauvegarder les résultats en fichier .txt
+write.table(formatted_results, file = "pathway_results_clusters.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+```
+
+```{r}
+# 1. Charger les bibliothèques nécessaires
+
+# 3. Charger le fichier GMT contenant les pathways
+gmt_file2 <- "~/Desktop/c2.cp.v2024.1.Hs.symbols.gmt"  # Chemin vers le fichier GMT
+
+# 4. Exécuter l'analyse ActivePathways
+pathway_results2 <- ActivePathways(markers_filtered,gmt_file2,significant = 0.05)
+
+# 5. Afficher les résultats
+head(pathway_results2)
+
+# Préparer les données pour ggplot
+top_pathways2 <- pathway_results2 %>%
+  group_by(evidence) %>%  # evidence ici correspond à vos clusters
+  slice_min(order_by = adjusted_p_val, n = 5) %>%  # Sélectionner les 5 pathways les plus significatifs par cluster
+  ungroup()
+
+top_pathways2$evidence <- sapply(top_pathways2$evidence, function(x) x[[1]])
+top_pathways2$overlap <- sapply(top_pathways2$overlap, function(x) length(x))
+
+ggplot(top_pathways2, aes(x = evidence, y = term_id, size = overlap, color = -log10(adjusted_p_val))) +
+  geom_point() +
+  scale_size_continuous(name = "Gènes enrichis", range = c(3, 10)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_minimal() +
+  labs(
+    x = "Cluster",
+    y = "Pathway",
+    title = "Pathways enrichis par cluster"
+  )
+
+
+
+```
+
+
+
+```
+
+
+```{r}
+# Generate the UMAP plot
+umap_plot <- DimPlot(My_object, reduction = "umap", label = TRUE, pt.size = 4, label.size = 7, cols = My_object.idents.col) + NoLegend()
+
+# Specify the file path for the PDF
+pdf_file <- "../results/umap_plot.pdf"
+
+# Save the plot as a PDF
+pdf(pdf_file, width = 20, height = 10)
+print(umap_plot)
+dev.off()
+```
+
+## 7. SessionInfo
+
+```{r}
+## Take environment snapshot 
+#renv::snapshot()
+
+sessionInfo()
+```
